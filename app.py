@@ -1,0 +1,491 @@
+"""
+Canal Monitoring System - Backend
+----------------------------------
+FastAPI + SQLite backend that serves the web interface and provides a
+REST API for canals, link canals and sensors.
+
+Run:
+    pip install -r requirements.txt
+    uvicorn app:app --reload
+
+Then open http://127.0.0.1:8000/
+"""
+
+import os
+import sqlite3
+import random
+from typing import Optional
+
+from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "canal_monitoring.db")
+
+app = FastAPI(title="Canal Monitoring System")
+
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+
+
+# ----------------------------------------------------------------------
+# Database helpers
+# ----------------------------------------------------------------------
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 8000")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def init_db():
+    db = sqlite3.connect(DB_PATH, timeout=10)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode = WAL")
+    db.execute("PRAGMA busy_timeout = 8000")
+    db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS canals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            x1 REAL DEFAULT 60, y1 REAL DEFAULT 200,
+            x2 REAL DEFAULT 520, y2 REAL DEFAULT 200,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS link_canals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            main_canal_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            x1 REAL DEFAULT 300, y1 REAL DEFAULT 200,
+            x2 REAL DEFAULT 300, y2 REAL DEFAULT 380,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (main_canal_id) REFERENCES canals(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS sensors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sensor_type TEXT NOT NULL,           -- 'Canal' or 'Water Course'
+            main_canal_id INTEGER,               -- NULL while sitting unassigned in the tray
+            link_canal_id INTEGER,               -- NULL if placed directly on main canal
+            width REAL NOT NULL,
+            depth REAL NOT NULL,
+            water_level REAL DEFAULT 0,
+            flow_rate REAL DEFAULT 0,
+            pos_ratio REAL DEFAULT 0.5,           -- position along the line (0-1) for map view
+            status TEXT DEFAULT 'ok',             -- ok | warning | dead
+            last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (main_canal_id) REFERENCES canals(id) ON DELETE CASCADE,
+            FOREIGN KEY (link_canal_id) REFERENCES link_canals(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL,
+            details TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS db_connections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            db_type TEXT NOT NULL,
+            host TEXT, port TEXT, db_name TEXT, username TEXT,
+            connected INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    db.commit()
+
+    # ---- migration: older DBs had sensors.main_canal_id as NOT NULL.
+    # Rebuild the table (preserving data) so sensors can sit unassigned
+    # in the map tray until they are dragged onto a canal.
+    col = db.execute("PRAGMA table_info(sensors)").fetchall()
+    main_canal_col = next((c for c in col if c["name"] == "main_canal_id"), None)
+    if main_canal_col is not None and main_canal_col["notnull"] == 1:
+        db.executescript(
+            """
+            ALTER TABLE sensors RENAME TO sensors_old;
+            CREATE TABLE sensors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                sensor_type TEXT NOT NULL,
+                main_canal_id INTEGER,
+                link_canal_id INTEGER,
+                width REAL NOT NULL,
+                depth REAL NOT NULL,
+                water_level REAL DEFAULT 0,
+                flow_rate REAL DEFAULT 0,
+                pos_ratio REAL DEFAULT 0.5,
+                status TEXT DEFAULT 'ok',
+                last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (main_canal_id) REFERENCES canals(id) ON DELETE CASCADE,
+                FOREIGN KEY (link_canal_id) REFERENCES link_canals(id) ON DELETE CASCADE
+            );
+            INSERT INTO sensors SELECT * FROM sensors_old;
+            DROP TABLE sensors_old;
+            """
+        )
+        db.commit()
+
+    # seed sample data only if empty
+    cur = db.execute("SELECT COUNT(*) AS c FROM canals")
+    if cur.fetchone()["c"] == 0:
+        db.execute(
+            "INSERT INTO canals (name, x1, y1, x2, y2) VALUES (?, ?, ?, ?, ?)",
+            ("Main Canal - North", 60, 160, 640, 160),
+        )
+        main_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+        db.execute(
+            "INSERT INTO link_canals (main_canal_id, name, x1, y1, x2, y2) VALUES (?, ?, ?, ?, ?, ?)",
+            (main_id, "Link Canal - East", 380, 160, 380, 420),
+        )
+        link_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+        db.execute(
+            """INSERT INTO sensors
+               (name, sensor_type, main_canal_id, link_canal_id, width, depth,
+                water_level, flow_rate, pos_ratio, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            ("S-101", "Canal", main_id, None, 12.5, 4.2, 3.1, 22.4, 0.25, "ok"),
+        )
+        db.execute(
+            """INSERT INTO sensors
+               (name, sensor_type, main_canal_id, link_canal_id, width, depth,
+                water_level, flow_rate, pos_ratio, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            ("S-102", "Canal", main_id, None, 12.5, 4.2, 1.1, 6.2, 0.65, "warning"),
+        )
+        db.execute(
+            """INSERT INTO sensors
+               (name, sensor_type, main_canal_id, link_canal_id, width, depth,
+                water_level, flow_rate, pos_ratio, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            ("S-201", "Water Course", main_id, link_id, 5.0, 2.1, 0.0, 0.0, 0.5, "dead"),
+        )
+        db.execute(
+            """INSERT INTO sensors
+               (name, sensor_type, main_canal_id, link_canal_id, width, depth,
+                water_level, flow_rate, pos_ratio, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            ("S-301", "Canal", None, None, 8.0, 3.0, 2.4, 14.0, 0.5, "ok"),
+        )
+        db.commit()
+    db.close()
+
+
+def log_action(db, action, details=""):
+    db.execute("INSERT INTO logs (action, details) VALUES (?, ?)", (action, details))
+    db.commit()
+
+
+# threshold rules used for computing status from readings
+LOW_LEVEL_THRESHOLD = 1.5  # below this -> warning (yellow)
+
+
+def compute_status(water_level, last_seen, current_status):
+    """Recompute status unless it has been manually forced to 'dead'."""
+    if current_status == "dead":
+        return "dead"
+    if water_level is None:
+        return "dead"
+    if water_level < LOW_LEVEL_THRESHOLD:
+        return "warning"
+    return "ok"
+
+
+init_db()
+
+
+# ----------------------------------------------------------------------
+# Pydantic request models
+# ----------------------------------------------------------------------
+class CanalIn(BaseModel):
+    name: str
+
+
+class LinkCanalIn(BaseModel):
+    main_canal_id: int
+    name: str
+
+
+class LinkCanalUpdate(BaseModel):
+    main_canal_id: Optional[int] = None
+    name: Optional[str] = None
+    x1: Optional[float] = None
+    y1: Optional[float] = None
+    x2: Optional[float] = None
+    y2: Optional[float] = None
+
+
+class SensorIn(BaseModel):
+    name: str
+    sensor_type: str
+    main_canal_id: Optional[int] = None
+    link_canal_id: Optional[int] = None
+    width: float
+    depth: float
+
+
+class SensorUpdate(BaseModel):
+    name: Optional[str] = None
+    sensor_type: Optional[str] = None
+    main_canal_id: Optional[int] = None
+    link_canal_id: Optional[int] = None
+    width: Optional[float] = None
+    depth: Optional[float] = None
+    water_level: Optional[float] = None
+    flow_rate: Optional[float] = None
+    status: Optional[str] = None
+    pos_ratio: Optional[float] = None
+    clear_main_canal: bool = False
+    clear_link_canal: bool = False
+
+
+class DbConnectionIn(BaseModel):
+    db_type: str
+    host: Optional[str] = None
+    port: Optional[str] = None
+    db_name: Optional[str] = None
+    username: Optional[str] = None
+
+
+# ----------------------------------------------------------------------
+# Page routes
+# ----------------------------------------------------------------------
+@app.get("/", name="home")
+def home(request: Request):
+    return templates.TemplateResponse(request, "index.html", {"active": "home"})
+
+
+@app.get("/map", name="map_page")
+def map_page(request: Request):
+    return templates.TemplateResponse(request, "map.html", {"active": "map"})
+
+
+# ----------------------------------------------------------------------
+# API: Canals
+# ----------------------------------------------------------------------
+@app.get("/api/canals")
+def api_get_canals(db: sqlite3.Connection = Depends(get_db)):
+    rows = db.execute("SELECT * FROM canals ORDER BY name").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/canals", status_code=201)
+def api_add_canal(payload: CanalIn, db: sqlite3.Connection = Depends(get_db)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Canal name is required")
+    try:
+        db.execute("INSERT INTO canals (name) VALUES (?)", (name,))
+        db.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="A canal with this name already exists")
+    log_action(db, "Add Canal", name)
+    return {"message": "Canal added", "name": name}
+
+
+@app.delete("/api/canals/{canal_id}")
+def api_delete_canal(canal_id: int, db: sqlite3.Connection = Depends(get_db)):
+    row = db.execute("SELECT name FROM canals WHERE id=?", (canal_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Canal not found")
+    db.execute("DELETE FROM canals WHERE id=?", (canal_id,))
+    db.commit()
+    log_action(db, "Delete Canal", row["name"])
+    return {"message": "Canal deleted"}
+
+
+# ----------------------------------------------------------------------
+# API: Link canals
+# ----------------------------------------------------------------------
+@app.get("/api/link-canals")
+def api_get_link_canals(db: sqlite3.Connection = Depends(get_db)):
+    rows = db.execute(
+        """SELECT lc.*, c.name AS main_canal_name
+           FROM link_canals lc JOIN canals c ON lc.main_canal_id = c.id
+           ORDER BY lc.name"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/link-canals", status_code=201)
+def api_add_link_canal(payload: LinkCanalIn, db: sqlite3.Connection = Depends(get_db)):
+    name = payload.name.strip()
+    if not payload.main_canal_id or not name:
+        raise HTTPException(status_code=400, detail="Main canal and link canal name are required")
+    db.execute(
+        "INSERT INTO link_canals (main_canal_id, name) VALUES (?, ?)",
+        (payload.main_canal_id, name),
+    )
+    db.commit()
+    log_action(db, "Add Link Canal", name)
+    return {"message": "Link canal added"}
+
+
+@app.put("/api/link-canals/{link_id}")
+def api_update_link_canal(link_id: int, payload: LinkCanalUpdate, db: sqlite3.Connection = Depends(get_db)):
+    """Used by the map's drag-and-drop editor to reposition a link canal:
+    dragging the branch point slides it left/right along the main canal,
+    dragging the free end extends it up or down from the main canal."""
+    row = db.execute("SELECT * FROM link_canals WHERE id=?", (link_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Link canal not found")
+
+    fields = ["main_canal_id", "name", "x1", "y1", "x2", "y2"]
+    data = payload.dict(exclude_unset=True)
+    updates, values = [], []
+    for f in fields:
+        if f in data and data[f] is not None:
+            updates.append(f"{f} = ?")
+            values.append(data[f])
+    if updates:
+        values.append(link_id)
+        db.execute(f"UPDATE link_canals SET {', '.join(updates)} WHERE id = ?", values)
+        db.commit()
+    log_action(db, "Move Link Canal", row["name"])
+    return {"message": "Link canal updated"}
+
+
+@app.delete("/api/link-canals/{link_id}")
+def api_delete_link_canal(link_id: int, db: sqlite3.Connection = Depends(get_db)):
+    row = db.execute("SELECT name FROM link_canals WHERE id=?", (link_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Link canal not found")
+    db.execute("DELETE FROM link_canals WHERE id=?", (link_id,))
+    db.commit()
+    log_action(db, "Delete Link Canal", row["name"])
+    return {"message": "Link canal deleted"}
+
+
+# ----------------------------------------------------------------------
+# API: Sensors
+# ----------------------------------------------------------------------
+@app.get("/api/sensors")
+def api_get_sensors(db: sqlite3.Connection = Depends(get_db)):
+    rows = db.execute(
+        """SELECT s.*, c.name AS canal_name, lc.name AS link_name
+           FROM sensors s
+           LEFT JOIN canals c ON s.main_canal_id = c.id
+           LEFT JOIN link_canals lc ON s.link_canal_id = lc.id
+           ORDER BY s.name"""
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["status"] = compute_status(d["water_level"], d["last_seen"], d["status"])
+        result.append(d)
+    return result
+
+
+@app.post("/api/sensors", status_code=201)
+def api_add_sensor(payload: SensorIn, db: sqlite3.Connection = Depends(get_db)):
+    name = payload.name.strip()
+    if not name or not payload.sensor_type or payload.width is None or payload.depth is None:
+        raise HTTPException(status_code=400, detail="Name, type, width and depth are required")
+
+    water_level = round(random.uniform(0.5, 4.0), 2)
+    flow_rate = round(random.uniform(2.0, 30.0), 2)
+    db.execute(
+        """INSERT INTO sensors
+           (name, sensor_type, main_canal_id, link_canal_id, width, depth,
+            water_level, flow_rate, status)
+           VALUES (?,?,?,?,?,?,?,?, 'ok')""",
+        (name, payload.sensor_type, payload.main_canal_id, payload.link_canal_id,
+         payload.width, payload.depth, water_level, flow_rate),
+    )
+    db.commit()
+    log_action(db, "Add Sensor", name)
+    return {"message": "Sensor added"}
+
+
+@app.put("/api/sensors/{sensor_id}")
+def api_update_sensor(sensor_id: int, payload: SensorUpdate, db: sqlite3.Connection = Depends(get_db)):
+    row = db.execute("SELECT * FROM sensors WHERE id=?", (sensor_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Sensor not found")
+
+    fields = ["name", "sensor_type", "main_canal_id", "link_canal_id",
+              "width", "depth", "water_level", "flow_rate", "status", "pos_ratio"]
+    data = payload.dict(exclude_unset=True)
+    updates, values = [], []
+    for f in fields:
+        if f in data:
+            updates.append(f"{f} = ?")
+            values.append(data[f])
+
+    # Explicit "uninstall" flags let the map's drag-and-drop send a clean
+    # null even though a normal missing field is left untouched.
+    if payload.clear_main_canal:
+        updates.append("main_canal_id = ?")
+        values.append(None)
+    if payload.clear_link_canal:
+        updates.append("link_canal_id = ?")
+        values.append(None)
+
+    if updates:
+        updates.append("last_seen = CURRENT_TIMESTAMP")
+        values.append(sensor_id)
+        db.execute(f"UPDATE sensors SET {', '.join(updates)} WHERE id = ?", values)
+        db.commit()
+    log_action(db, "Modify Sensor", row["name"])
+    return {"message": "Sensor updated"}
+
+
+@app.delete("/api/sensors/{sensor_id}")
+def api_delete_sensor(sensor_id: int, db: sqlite3.Connection = Depends(get_db)):
+    row = db.execute("SELECT name FROM sensors WHERE id=?", (sensor_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Sensor not found")
+    db.execute("DELETE FROM sensors WHERE id=?", (sensor_id,))
+    db.commit()
+    log_action(db, "Delete Sensor", row["name"])
+    return {"message": "Sensor deleted"}
+
+
+# ----------------------------------------------------------------------
+# API: Logs
+# ----------------------------------------------------------------------
+@app.get("/api/logs")
+def api_get_logs(db: sqlite3.Connection = Depends(get_db)):
+    rows = db.execute("SELECT * FROM logs ORDER BY id DESC LIMIT 200").fetchall()
+    return [dict(r) for r in rows]
+
+
+# ----------------------------------------------------------------------
+# API: Database connection (config only - simulated)
+# ----------------------------------------------------------------------
+@app.get("/api/db-connection")
+def api_get_db_connection(db: sqlite3.Connection = Depends(get_db)):
+    row = db.execute("SELECT * FROM db_connections ORDER BY id DESC LIMIT 1").fetchone()
+    return dict(row) if row else {}
+
+
+@app.post("/api/db-connection", status_code=201)
+def api_set_db_connection(payload: DbConnectionIn, db: sqlite3.Connection = Depends(get_db)):
+    db.execute(
+        """INSERT INTO db_connections (db_type, host, port, db_name, username, connected)
+           VALUES (?,?,?,?,?,1)""",
+        (payload.db_type, payload.host, payload.port, payload.db_name, payload.username),
+    )
+    db.commit()
+    log_action(db, "Connect Database", f"{payload.db_type} @ {payload.host}")
+    return {"message": "Database connected (configuration saved)"}
+
+
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

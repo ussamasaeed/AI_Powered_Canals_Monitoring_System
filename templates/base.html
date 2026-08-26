@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Canal Monitoring System</title>
+<link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
+</head>
+<body>
+
+<div class="app-shell">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="topbar-title">
+      <span class="ripple-icon">〰</span>
+      Canal Monitoring System
+    </div>
+    <button class="hamburger-btn" id="hamburgerBtn" aria-label="Open menu">
+      <span></span><span></span><span></span>
+    </button>
+  </header>
+
+  <!-- Slide down dropdown menu -->
+  <nav class="menu-dropdown" id="menuDropdown">
+    <button class="menu-item" data-action="add-canal">Add Canal</button>
+    <button class="menu-item" data-action="add-link-canal">Add Link Canal</button>
+    <button class="menu-item" data-action="add-sensor">Add Sensor</button>
+    <button class="menu-item" data-action="modify-sensor">Modify Sensor</button>
+    <button class="menu-item" data-action="delete">Delete</button>
+    <button class="menu-item" data-action="log">Log</button>
+    <button class="menu-item" data-action="connect-db">Connect Database</button>
+  </nav>
+
+  <div class="body-row">
+    <!-- Left nav (Home / Map tabs) -->
+    <aside class="tabs-panel">
+      <a href="{{ url_for('home') }}" class="tab-btn {{ 'active' if active=='home' else '' }}">Home</a>
+      <a href="{{ url_for('map_page') }}" class="tab-btn {{ 'active' if active=='map' else '' }}">Map</a>
+    </aside>
+
+    <!-- Page content -->
+    <main class="content-area">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+<!-- ============ MODALS ============ -->
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal-box" id="modalBox"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="{{ url_for('static', path='js/common.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

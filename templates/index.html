@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="panel panel-left" id="sensorListPanel">
+  <div class="panel-header">
+    <h2>Sensors</h2>
+    <span class="panel-sub" id="sensorCount">0 devices</span>
+  </div>
+  <div class="sensor-list" id="sensorList">
+    <!-- sensor cards injected by home.js -->
+  </div>
+</section>
+
+<div class="panel-divider"></div>
+
+<section class="panel panel-right" id="alertPanel">
+  <div class="panel-header">
+    <h2>Alerts</h2>
+    <span class="panel-sub" id="alertCount">0 active</span>
+  </div>
+  <div class="alert-list" id="alertList">
+    <!-- alert cards injected by home.js -->
+  </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='js/home.js') }}"></script>
+{% endblock %}

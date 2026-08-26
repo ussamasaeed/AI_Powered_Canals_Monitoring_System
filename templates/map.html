@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="panel panel-map">
+  <div class="panel-header">
+    <h2>Canal Network Map</h2>
+    <div class="legend">
+      <span class="legend-item"><i class="dot dot-ok"></i> Working</span>
+      <span class="legend-item"><i class="dot dot-warning"></i> Low Level</span>
+      <span class="legend-item"><i class="dot dot-dead"></i> Dead</span>
+    </div>
+  </div>
+  <p class="map-hint">
+    Drag a sensor from the tray onto a canal to install it. Drag an installed sensor to move or reposition it.
+    Drag a link canal's <strong>top handle</strong> to slide it along the main canal, or its <strong>end handle</strong> up/down to extend it.
+  </p>
+  <div class="map-wrapper">
+    <svg id="canalMap" viewBox="0 0 900 620" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="map-tooltip" id="mapTooltip"></div>
+  </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='js/map.js') }}"></script>
+{% endblock %}
