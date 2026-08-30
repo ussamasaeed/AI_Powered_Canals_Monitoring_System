@@ -91,6 +91,7 @@ async function handleMenuAction(action) {
     case "modify-sensor": return openModifySensorModal();
     case "delete": return openDeleteModal();
     case "log": return openLogModal();
+    case "auto-threshold": return openAutoThresholdModal();
     case "connect-db": return openConnectDbModal();
   }
 }
@@ -211,8 +212,12 @@ async function openAddSensorModal() {
       <input id="sWidth" type="number" step="0.1" placeholder="e.g. 12.5">
     </div>
     <div class="form-group">
-      <label for="sDepth">Depth (m)</label>
+      <label for="sDepth">Empty Canal Depth (m)</label>
       <input id="sDepth" type="number" step="0.1" placeholder="e.g. 4.2">
+    </div>
+    <div class="form-group">
+      <label for="sMountHeight">Sensor Mount Height (m)</label>
+      <input id="sMountHeight" type="number" step="0.1" placeholder="e.g. 0.3">
     </div>
     <p style="color:var(--text-dim); font-size:0.8rem; margin-top:-4px;">
       Leave the main canal unassigned to drop the sensor in the map tray, then drag it onto a canal to install it.
@@ -231,8 +236,9 @@ async function openAddSensorModal() {
       name: document.getElementById("sName").value.trim(),
       width: parseFloat(document.getElementById("sWidth").value),
       depth: parseFloat(document.getElementById("sDepth").value),
+      sensor_mount_height: parseFloat(document.getElementById("sMountHeight").value),
     };
-    if (!payload.name || isNaN(payload.width) || isNaN(payload.depth)) {
+    if (!payload.name || isNaN(payload.width) || isNaN(payload.depth) || isNaN(payload.sensor_mount_height)) {
       return showToast("Please fill all required fields", "error");
     }
     try {
@@ -283,21 +289,29 @@ async function openModifySensorModal() {
         <input id="mName" type="text" value="${sensor.name}">
       </div>
       <div class="form-group">
-        <label for="mWidth">Width (m)</label>
+        <label for="mWidth">Canal Width (m)</label>
         <input id="mWidth" type="number" step="0.1" value="${sensor.width}">
       </div>
       <div class="form-group">
-        <label for="mDepth">Depth (m)</label>
+        <label for="mDepth">Empty Canal Depth (m)</label>
         <input id="mDepth" type="number" step="0.1" value="${sensor.depth}">
       </div>
       <div class="form-group">
-        <label for="mWaterLevel">Water Level (m)</label>
-        <input id="mWaterLevel" type="number" step="0.1" value="${sensor.water_level}">
+        <label for="mMountHeight">Sensor Mount Height (m)</label>
+        <input id="mMountHeight" type="number" step="0.1" value="${sensor.sensor_mount_height ?? 0}">
       </div>
       <div class="form-group">
-        <label for="mFlowRate">Flow Rate (m3/s)</label>
-        <input id="mFlowRate" type="number" step="0.1" value="${sensor.flow_rate}">
+        <label for="mDistance">Distance Measured by Sensor (m)</label>
+        <input id="mDistance" type="number" step="0.1" value="${sensor.distance_measured ?? 0}">
       </div>
+      <div class="form-group">
+        <label for="mVelocity">Velocity (m/s)</label>
+        <input id="mVelocity" type="number" step="0.1" value="${sensor.velocity ?? 0}">
+      </div>
+      <p style="color:var(--text-dim); font-size:0.8rem; margin-top:-4px;">
+        Auto-calculated — Water Level: <b>${sensor.water_level} m</b> &nbsp;·&nbsp;
+        Flow Rate: <b>${sensor.flow_rate} m&sup3;/s</b>
+      </p>
       <div class="form-group">
         <label for="mStatus">Status</label>
         <select id="mStatus">
@@ -320,8 +334,9 @@ async function openModifySensorModal() {
       name: document.getElementById("mName").value.trim(),
       width: parseFloat(document.getElementById("mWidth").value),
       depth: parseFloat(document.getElementById("mDepth").value),
-      water_level: parseFloat(document.getElementById("mWaterLevel").value),
-      flow_rate: parseFloat(document.getElementById("mFlowRate").value),
+      sensor_mount_height: parseFloat(document.getElementById("mMountHeight").value),
+      distance_measured: parseFloat(document.getElementById("mDistance").value),
+      velocity: parseFloat(document.getElementById("mVelocity").value),
       status: document.getElementById("mStatus").value,
     };
     try {
@@ -418,6 +433,71 @@ async function openLogModal() {
       <button class="btn btn-secondary" onclick="closeModal()">Close</button>
     </div>
   `);
+}
+
+/* ---------------- Auto Set Threshold ---------------- */
+async function openAutoThresholdModal() {
+  let canals = [];
+  try { canals = await API.get("/api/canals"); } catch (e) { /* ignore */ }
+
+  if (canals.length === 0) {
+    openModal(`
+      <h3>Auto Set Threshold</h3>
+      <p style="color:var(--text-dim); font-size:0.88rem;">No canals available.</p>
+      <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>
+    `);
+    return;
+  }
+
+  openModal(`
+    <h3>Auto Set Threshold</h3>
+    <p style="color:var(--text-dim); font-size:0.8rem; margin-top:-4px;">
+      Sets each sensor's low-water threshold to its current reading. Applied
+      separately, sensor by sensor.
+    </p>
+    <div class="form-group">
+      <label for="atMainCanal">Main Canal</label>
+      <select id="atMainCanal">
+        ${canals.map((c) => `<option value="${c.id}">${c.name}</option>`).join("")}
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="atLinkCanal">Link Canal</label>
+      <select id="atLinkCanal">
+        <option value="">All sensors on this main canal</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="setThresholdBtn">Set</button>
+    </div>
+  `);
+
+  let allLinks = [];
+  try { allLinks = await API.get("/api/link-canals"); } catch (e) { /* ignore */ }
+
+  function refreshLinkOptions() {
+    const mainId = document.getElementById("atMainCanal").value;
+    const filtered = allLinks.filter((l) => String(l.main_canal_id) === String(mainId));
+    const sel = document.getElementById("atLinkCanal");
+    sel.innerHTML = `<option value="">All sensors on this main canal</option>` +
+      filtered.map((l) => `<option value="${l.id}">${l.name}</option>`).join("");
+  }
+  document.getElementById("atMainCanal").addEventListener("change", refreshLinkOptions);
+  refreshLinkOptions();
+
+  document.getElementById("setThresholdBtn").addEventListener("click", async () => {
+    const main_canal_id = document.getElementById("atMainCanal").value;
+    const link_canal_id = document.getElementById("atLinkCanal").value || null;
+    try {
+      const res = await API.post("/api/sensors/auto-threshold", { main_canal_id, link_canal_id });
+      showToast(res.message || "Threshold updated");
+      closeModal();
+      window.dispatchEvent(new Event("data-changed"));
+    } catch (err) {
+      showToast(err.error || "Failed to set threshold", "error");
+    }
+  });
 }
 
 /* ---------------- Connect Database ---------------- */

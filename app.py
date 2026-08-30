@@ -77,8 +77,12 @@ def init_db():
             link_canal_id INTEGER,               -- NULL if placed directly on main canal
             width REAL NOT NULL,
             depth REAL NOT NULL,
+            sensor_mount_height REAL DEFAULT 0,   -- height of the sensor above the empty canal bed
+            distance_measured REAL DEFAULT 0,     -- raw distance reading from the sensor to the water surface
+            velocity REAL DEFAULT 0,              -- raw velocity reading from the sensor
             water_level REAL DEFAULT 0,
             flow_rate REAL DEFAULT 0,
+            threshold REAL DEFAULT 1.5,           -- per-sensor low-water threshold
             pos_ratio REAL DEFAULT 0.5,           -- position along the line (0-1) for map view
             status TEXT DEFAULT 'ok',             -- ok | warning | dead
             last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -137,6 +141,20 @@ def init_db():
         )
         db.commit()
 
+    # ---- migration: add the flow-rate / threshold columns to older DBs
+    # that were created before this feature existed.
+    existing_cols = {c["name"] for c in db.execute("PRAGMA table_info(sensors)").fetchall()}
+    new_cols = {
+        "sensor_mount_height": "REAL DEFAULT 0",
+        "distance_measured": "REAL DEFAULT 0",
+        "velocity": "REAL DEFAULT 0",
+        "threshold": "REAL DEFAULT 1.5",
+    }
+    for col_name, col_def in new_cols.items():
+        if col_name not in existing_cols:
+            db.execute(f"ALTER TABLE sensors ADD COLUMN {col_name} {col_def}")
+    db.commit()
+
     # seed sample data only if empty
     cur = db.execute("SELECT COUNT(*) AS c FROM canals")
     if cur.fetchone()["c"] == 0:
@@ -190,18 +208,39 @@ def log_action(db, action, details=""):
 
 
 # threshold rules used for computing status from readings
-LOW_LEVEL_THRESHOLD = 1.5  # below this -> warning (yellow)
+LOW_LEVEL_THRESHOLD = 1.5  # fallback, used until a sensor gets its own threshold
 
 
-def compute_status(water_level, last_seen, current_status):
+def compute_status(water_level, last_seen, current_status, threshold=None):
     """Recompute status unless it has been manually forced to 'dead'."""
     if current_status == "dead":
         return "dead"
     if water_level is None:
         return "dead"
-    if water_level < LOW_LEVEL_THRESHOLD:
+    t = threshold if threshold is not None else LOW_LEVEL_THRESHOLD
+    if water_level < t:
         return "warning"
     return "ok"
+
+
+def compute_flow(width, depth, sensor_mount_height, distance_measured, velocity):
+    """Flow_rate = Area * Velocity, where:
+    water_depth = (Empty_canal_depth + sensor_mount_height) - Distance_measured_by_sensor
+    Area = canal_width * water_depth
+    Velocity and Distance_measured_by_sensor come directly from the sensor readings;
+    sensor_mount_height is set when the sensor is added/modified.
+    """
+    width = width or 0
+    depth = depth or 0
+    sensor_mount_height = sensor_mount_height or 0
+    distance_measured = distance_measured or 0
+    velocity = velocity or 0
+
+    water_depth = (depth + sensor_mount_height) - distance_measured
+    water_depth = max(0.0, water_depth)
+    area = width * water_depth
+    flow_rate = area * velocity
+    return round(water_depth, 3), round(flow_rate, 3)
 
 
 init_db()
@@ -235,6 +274,7 @@ class SensorIn(BaseModel):
     link_canal_id: Optional[int] = None
     width: float
     depth: float
+    sensor_mount_height: float = 0
 
 
 class SensorUpdate(BaseModel):
@@ -244,12 +284,19 @@ class SensorUpdate(BaseModel):
     link_canal_id: Optional[int] = None
     width: Optional[float] = None
     depth: Optional[float] = None
-    water_level: Optional[float] = None
-    flow_rate: Optional[float] = None
+    sensor_mount_height: Optional[float] = None
+    distance_measured: Optional[float] = None
+    velocity: Optional[float] = None
+    threshold: Optional[float] = None
     status: Optional[str] = None
     pos_ratio: Optional[float] = None
     clear_main_canal: bool = False
     clear_link_canal: bool = False
+
+
+class AutoThresholdIn(BaseModel):
+    main_canal_id: int
+    link_canal_id: Optional[int] = None
 
 
 class DbConnectionIn(BaseModel):
@@ -384,7 +431,7 @@ def api_get_sensors(db: sqlite3.Connection = Depends(get_db)):
     result = []
     for r in rows:
         d = dict(r)
-        d["status"] = compute_status(d["water_level"], d["last_seen"], d["status"])
+        d["status"] = compute_status(d["water_level"], d["last_seen"], d["status"], d.get("threshold"))
         result.append(d)
     return result
 
@@ -395,15 +442,21 @@ def api_add_sensor(payload: SensorIn, db: sqlite3.Connection = Depends(get_db)):
     if not name or not payload.sensor_type or payload.width is None or payload.depth is None:
         raise HTTPException(status_code=400, detail="Name, type, width and depth are required")
 
-    water_level = round(random.uniform(0.5, 4.0), 2)
-    flow_rate = round(random.uniform(2.0, 30.0), 2)
+    # Distance and velocity come directly from the sensor hardware - simulated here.
+    distance_measured = round(random.uniform(0.2, max(0.3, payload.depth + payload.sensor_mount_height)), 2)
+    velocity = round(random.uniform(0.3, 2.5), 2)
+    water_level, flow_rate = compute_flow(
+        payload.width, payload.depth, payload.sensor_mount_height, distance_measured, velocity
+    )
     db.execute(
         """INSERT INTO sensors
            (name, sensor_type, main_canal_id, link_canal_id, width, depth,
-            water_level, flow_rate, status)
-           VALUES (?,?,?,?,?,?,?,?, 'ok')""",
+            sensor_mount_height, distance_measured, velocity,
+            water_level, flow_rate, threshold, status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'ok')""",
         (name, payload.sensor_type, payload.main_canal_id, payload.link_canal_id,
-         payload.width, payload.depth, water_level, flow_rate),
+         payload.width, payload.depth, payload.sensor_mount_height,
+         distance_measured, velocity, water_level, flow_rate, LOW_LEVEL_THRESHOLD),
     )
     db.commit()
     log_action(db, "Add Sensor", name)
@@ -417,13 +470,27 @@ def api_update_sensor(sensor_id: int, payload: SensorUpdate, db: sqlite3.Connect
         raise HTTPException(status_code=404, detail="Sensor not found")
 
     fields = ["name", "sensor_type", "main_canal_id", "link_canal_id",
-              "width", "depth", "water_level", "flow_rate", "status", "pos_ratio"]
+              "width", "depth", "sensor_mount_height", "distance_measured",
+              "velocity", "threshold", "status", "pos_ratio"]
     data = payload.dict(exclude_unset=True)
+    merged = dict(row)
     updates, values = [], []
     for f in fields:
-        if f in data:
+        if f in data and data[f] is not None:
+            merged[f] = data[f]
             updates.append(f"{f} = ?")
             values.append(data[f])
+
+    # Recompute Flow_rate = Area * Velocity whenever any input to that
+    # formula (width/depth/mount height/distance/velocity) changes.
+    flow_inputs = {"width", "depth", "sensor_mount_height", "distance_measured", "velocity"}
+    if flow_inputs & set(data.keys()):
+        water_level, flow_rate = compute_flow(
+            merged["width"], merged["depth"], merged["sensor_mount_height"],
+            merged["distance_measured"], merged["velocity"],
+        )
+        updates += ["water_level = ?", "flow_rate = ?"]
+        values += [water_level, flow_rate]
 
     # Explicit "uninstall" flags let the map's drag-and-drop send a clean
     # null even though a normal missing field is left untouched.
@@ -441,6 +508,35 @@ def api_update_sensor(sensor_id: int, payload: SensorUpdate, db: sqlite3.Connect
         db.commit()
     log_action(db, "Modify Sensor", row["name"])
     return {"message": "Sensor updated"}
+
+
+@app.post("/api/sensors/auto-threshold")
+def api_auto_threshold(payload: AutoThresholdIn, db: sqlite3.Connection = Depends(get_db)):
+    """Set each matching sensor's threshold to its current water level reading.
+    Applied per-sensor, separately, for every sensor in the chosen scope:
+    a single link canal if one is given, otherwise every sensor on the
+    given main canal (including ones installed on its link canals)."""
+    if payload.link_canal_id:
+        rows = db.execute(
+            "SELECT id, water_level FROM sensors WHERE link_canal_id = ?",
+            (payload.link_canal_id,),
+        ).fetchall()
+        scope = f"link canal #{payload.link_canal_id}"
+    else:
+        rows = db.execute(
+            "SELECT id, water_level FROM sensors WHERE main_canal_id = ?",
+            (payload.main_canal_id,),
+        ).fetchall()
+        scope = f"main canal #{payload.main_canal_id}"
+
+    for r in rows:
+        db.execute(
+            "UPDATE sensors SET threshold = ? WHERE id = ?",
+            (r["water_level"], r["id"]),
+        )
+    db.commit()
+    log_action(db, "Auto Set Threshold", f"{len(rows)} sensor(s) on {scope}")
+    return {"message": f"Threshold set for {len(rows)} sensor(s)", "count": len(rows)}
 
 
 @app.delete("/api/sensors/{sensor_id}")

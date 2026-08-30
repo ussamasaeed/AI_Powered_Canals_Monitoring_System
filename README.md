@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Canal Monitoring System
 
 An AI-powered web interface for monitoring irrigation canals, link canals,
@@ -128,6 +127,3 @@ are saved immediately and logged in the Activity Log.
 - The "Connect Database" screen currently stores connection *settings*;
   swap the SQLite calls in `app.py` for `psycopg2`/`PyMySQL`/`pymongo`
   calls if you want to point production data at Postgres/MySQL/MongoDB.
-=======
-# AI_Powered_Canals_Monitoring_System
->>>>>>> 1967e9cbd5077e180af6350d1149a45727e916b4
