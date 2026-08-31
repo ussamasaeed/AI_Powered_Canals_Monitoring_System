@@ -92,6 +92,7 @@ async function handleMenuAction(action) {
     case "delete": return openDeleteModal();
     case "log": return openLogModal();
     case "auto-threshold": return openAutoThresholdModal();
+    case "upload-data": return openUploadDataModal();
     case "connect-db": return openConnectDbModal();
   }
 }
@@ -498,6 +499,82 @@ async function openAutoThresholdModal() {
       showToast(err.error || "Failed to set threshold", "error");
     }
   });
+}
+
+/* ---------------- Upload Sensor Data (Velocity / Distance_measured_sensor) ---------------- */
+function openUploadDataModal() {
+  openModal(`
+    <h3>Upload Sensor Data</h3>
+    <p style="color:var(--text-dim); font-size:0.8rem; margin-top:-4px;">
+      No physical sensors are connected yet, so Velocity and Distance_measured_sensor
+      readings come from a JSON file instead. Each entry needs a sensor <code>name</code>,
+      <code>velocity</code> and <code>distance_measured</code>.
+    </p>
+    <ol style="color:var(--text-dim); font-size:0.8rem; padding-left:18px; margin:0 0 4px;">
+      <li>Choose your baseline file (e.g. <em>Threshold.json</em>) and press <strong>Set Threshold</strong> &mdash;
+          this saves those readings and stores each sensor's current level as its low-water threshold.</li>
+      <li>Then choose your live/check file (e.g. <em>checkThreshold.json</em>) and press <strong>Check Threshold</strong> &mdash;
+          this compares the new readings against the threshold and raises a low-water warning where needed.</li>
+    </ol>
+    <div class="form-group">
+      <label for="uploadFile">Select JSON File</label>
+      <input id="uploadFile" type="file" accept="application/json,.json">
+    </div>
+    <div id="uploadFileName" style="font-size:0.78rem; color:var(--text-dim); margin-top:-8px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+      <button class="btn btn-primary" id="checkThresholdUploadBtn">Check Threshold</button>
+      <button class="btn btn-primary" id="setThresholdUploadBtn">Set Threshold</button>
+    </div>
+  `);
+
+  const fileInput = document.getElementById("uploadFile");
+  fileInput.addEventListener("change", () => {
+    document.getElementById("uploadFileName").textContent = fileInput.files[0] ? `Selected: ${fileInput.files[0].name}` : "";
+  });
+
+  async function readSelectedReadings() {
+    const file = fileInput.files[0];
+    if (!file) {
+      showToast("Please choose a JSON file first", "error");
+      return null;
+    }
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch (e) {
+      showToast("That file isn't valid JSON", "error");
+      return null;
+    }
+    const readings = Array.isArray(data) ? data : (data.sensors || data.readings || []);
+    if (!Array.isArray(readings) || readings.length === 0) {
+      showToast("No sensor readings found in that file", "error");
+      return null;
+    }
+    return readings;
+  }
+
+  async function runUpload(mode, btn) {
+    const readings = await readSelectedReadings();
+    if (!readings) return;
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Processing...";
+    try {
+      const res = await API.post("/api/sensors/upload-readings", { readings, mode });
+      showToast(res.message || "Sensor data processed");
+      closeModal();
+      window.dispatchEvent(new Event("data-changed"));
+    } catch (err) {
+      showToast(err.error || "Failed to process file", "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+    }
+  }
+
+  document.getElementById("setThresholdUploadBtn").addEventListener("click", (e) => runUpload("threshold", e.target));
+  document.getElementById("checkThresholdUploadBtn").addEventListener("click", (e) => runUpload("check", e.target));
 }
 
 /* ---------------- Connect Database ---------------- */

@@ -13,8 +13,7 @@ Then open http://127.0.0.1:8000/
 
 import os
 import sqlite3
-import random
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -299,6 +298,18 @@ class AutoThresholdIn(BaseModel):
     link_canal_id: Optional[int] = None
 
 
+class SensorReadingItem(BaseModel):
+    name: str
+    velocity: Optional[float] = None
+    distance_measured: Optional[float] = None
+
+
+class SensorReadingsUpload(BaseModel):
+    readings: List[SensorReadingItem]
+    mode: str  # "threshold" -> save readings + set threshold from them
+               # "check"     -> save readings + compare against existing threshold
+
+
 class DbConnectionIn(BaseModel):
     db_type: str
     host: Optional[str] = None
@@ -442,21 +453,19 @@ def api_add_sensor(payload: SensorIn, db: sqlite3.Connection = Depends(get_db)):
     if not name or not payload.sensor_type or payload.width is None or payload.depth is None:
         raise HTTPException(status_code=400, detail="Name, type, width and depth are required")
 
-    # Distance and velocity come directly from the sensor hardware - simulated here.
-    distance_measured = round(random.uniform(0.2, max(0.3, payload.depth + payload.sensor_mount_height)), 2)
-    velocity = round(random.uniform(0.3, 2.5), 2)
-    water_level, flow_rate = compute_flow(
-        payload.width, payload.depth, payload.sensor_mount_height, distance_measured, velocity
-    )
+    # No physical sensor hardware is connected yet - Velocity and
+    # Distance_measured_sensor only arrive later via an uploaded JSON
+    # reading file (see /api/sensors/upload-readings). Until that happens,
+    # the sensor has no real data to report, so it starts out "dead".
     db.execute(
         """INSERT INTO sensors
            (name, sensor_type, main_canal_id, link_canal_id, width, depth,
             sensor_mount_height, distance_measured, velocity,
             water_level, flow_rate, threshold, status)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'ok')""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'dead')""",
         (name, payload.sensor_type, payload.main_canal_id, payload.link_canal_id,
          payload.width, payload.depth, payload.sensor_mount_height,
-         distance_measured, velocity, water_level, flow_rate, LOW_LEVEL_THRESHOLD),
+         None, None, 0, 0, LOW_LEVEL_THRESHOLD),
     )
     db.commit()
     log_action(db, "Add Sensor", name)
@@ -537,6 +546,94 @@ def api_auto_threshold(payload: AutoThresholdIn, db: sqlite3.Connection = Depend
     db.commit()
     log_action(db, "Auto Set Threshold", f"{len(rows)} sensor(s) on {scope}")
     return {"message": f"Threshold set for {len(rows)} sensor(s)", "count": len(rows)}
+
+
+@app.post("/api/sensors/upload-readings")
+def api_upload_readings(payload: SensorReadingsUpload, db: sqlite3.Connection = Depends(get_db)):
+    """Feed Velocity / Distance_measured_sensor readings from an uploaded JSON
+    file, since no physical sensors are wired up yet.
+
+    mode = "threshold": save the readings for each matching sensor, recompute
+      its water level, and set that water level as the sensor's own low-water
+      threshold (same effect as Auto Set Threshold, but sourced from a file).
+    mode = "check": save the readings for each matching sensor, recompute its
+      water level, and compare it against the threshold already on file,
+      raising a low-water (warning) status when the level has dropped below it.
+
+    In both modes, any sensor whose reading is missing Velocity or
+    Distance_measured_sensor is marked "dead" instead, since it means that
+    sensor did not report usable data.
+    """
+    matched = 0
+    dead_count = 0
+    warning_count = 0
+    unmatched = []
+
+    for item in payload.readings:
+        row = db.execute("SELECT * FROM sensors WHERE name = ?", (item.name,)).fetchone()
+        if not row:
+            unmatched.append(item.name)
+            continue
+        matched += 1
+        merged = dict(row)
+
+        if item.velocity is None or item.distance_measured is None:
+            # Sensor reported without Velocity and/or Distance_measured_sensor -
+            # treat it as offline/faulty rather than guessing values.
+            db.execute(
+                "UPDATE sensors SET status = 'dead', last_seen = CURRENT_TIMESTAMP WHERE id = ?",
+                (row["id"],),
+            )
+            dead_count += 1
+            continue
+
+        water_level, flow_rate = compute_flow(
+            merged["width"], merged["depth"], merged["sensor_mount_height"],
+            item.distance_measured, item.velocity,
+        )
+
+        threshold_value = merged["threshold"]
+        new_status = "ok"
+        if payload.mode == "check" and water_level < (threshold_value if threshold_value is not None else LOW_LEVEL_THRESHOLD):
+            new_status = "warning"
+            warning_count += 1
+
+        db.execute(
+            """UPDATE sensors
+               SET velocity = ?, distance_measured = ?, water_level = ?, flow_rate = ?,
+                   status = ?, last_seen = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (item.velocity, item.distance_measured, water_level, flow_rate, new_status, row["id"]),
+        )
+
+        if payload.mode == "threshold":
+            db.execute("UPDATE sensors SET threshold = ? WHERE id = ?", (water_level, row["id"]))
+
+    db.commit()
+    log_action(
+        db, "Upload Sensor Readings",
+        f"mode={payload.mode}, matched={matched}, dead={dead_count}, warning={warning_count}"
+        + (f", unmatched={','.join(unmatched)}" if unmatched else ""),
+    )
+
+    if payload.mode == "threshold":
+        message = f"Threshold set from {matched} sensor reading(s)"
+        if dead_count:
+            message += f", {dead_count} marked dead (missing data)"
+    else:
+        message = f"Checked {matched} sensor reading(s)"
+        if warning_count:
+            message += f" — {warning_count} low water warning(s)"
+        if dead_count:
+            message += f", {dead_count} marked dead (missing data)"
+
+    return {
+        "message": message,
+        "matched": matched,
+        "dead": dead_count,
+        "warning": warning_count,
+        "unmatched": unmatched,
+    }
 
 
 @app.delete("/api/sensors/{sensor_id}")
