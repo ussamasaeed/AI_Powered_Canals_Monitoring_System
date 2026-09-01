@@ -313,14 +313,10 @@ async function openModifySensorModal() {
         Auto-calculated — Water Level: <b>${sensor.water_level} m</b> &nbsp;·&nbsp;
         Flow Rate: <b>${sensor.flow_rate} m&sup3;/s</b>
       </p>
-      <div class="form-group">
-        <label for="mStatus">Status</label>
-        <select id="mStatus">
-          <option value="ok" ${sensor.status === "ok" ? "selected" : ""}>Working</option>
-          <option value="warning" ${sensor.status === "warning" ? "selected" : ""}>Low Level Warning</option>
-          <option value="dead" ${sensor.status === "dead" ? "selected" : ""}>Dead</option>
-        </select>
-      </div>
+      <p style="color:var(--text-dim); font-size:0.8rem; margin-top:-4px;">
+        Status is set automatically from incoming sensor data:
+        <b>${sensor.status === "ok" ? "Working" : sensor.status === "warning" ? "Low Level Warning" : "Dead"}</b>
+      </p>
     `;
   }
   renderFields(sensors[0]);
@@ -338,7 +334,6 @@ async function openModifySensorModal() {
       sensor_mount_height: parseFloat(document.getElementById("mMountHeight").value),
       distance_measured: parseFloat(document.getElementById("mDistance").value),
       velocity: parseFloat(document.getElementById("mVelocity").value),
-      status: document.getElementById("mStatus").value,
     };
     try {
       await API.put(`/api/sensors/${id}`, payload);
@@ -578,53 +573,134 @@ function openUploadDataModal() {
 }
 
 /* ---------------- Connect Database ---------------- */
-function openConnectDbModal() {
-  openModal(`
-    <h3>Connect Database</h3>
-    <div class="form-group">
-      <label for="dbType">Database Type</label>
-      <select id="dbType">
-        <option value="SQLite">SQLite (default, local)</option>
-        <option value="PostgreSQL">PostgreSQL</option>
-        <option value="MySQL">MySQL</option>
-        <option value="MongoDB">MongoDB</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label for="dbHost">Host</label>
-      <input id="dbHost" type="text" placeholder="e.g. localhost">
-    </div>
-    <div class="form-group">
-      <label for="dbPort">Port</label>
-      <input id="dbPort" type="text" placeholder="e.g. 5432">
-    </div>
-    <div class="form-group">
-      <label for="dbName">Database Name</label>
-      <input id="dbName" type="text" placeholder="e.g. canal_monitoring">
-    </div>
-    <div class="form-group">
-      <label for="dbUser">Username</label>
-      <input id="dbUser" type="text" placeholder="e.g. admin">
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="connectDbBtn">Connect</button>
-    </div>
-  `);
-  document.getElementById("connectDbBtn").addEventListener("click", async () => {
-    const payload = {
-      db_type: document.getElementById("dbType").value,
-      host: document.getElementById("dbHost").value.trim(),
-      port: document.getElementById("dbPort").value.trim(),
-      db_name: document.getElementById("dbName").value.trim(),
-      username: document.getElementById("dbUser").value.trim(),
-    };
-    try {
-      await API.post("/api/db-connection", payload);
-      showToast("Database connected");
-      closeModal();
-    } catch (err) {
-      showToast(err.error || "Connection failed", "error");
+async function openConnectDbModal() {
+  // Find out whether an external database is already connected (it stays
+  // connected - across page visits and app restarts - until it's removed).
+  openModal(`<h3>Connect Database</h3><p style="color:var(--text-dim);">Checking current connection…</p>`);
+
+  let status = {};
+  try {
+    status = await API.get("/api/db-connection");
+  } catch (e) {
+    status = {};
+  }
+
+  if (status.live_connected && status.db_type && status.db_type !== "SQLite") {
+    renderConnectedState(status);
+  } else {
+    renderConnectForm();
+  }
+
+  function renderConnectedState(status) {
+    openModal(`
+      <h3>Connect Database</h3>
+      <div class="db-connected-info" style="border:1px solid var(--border-color, #333); border-radius:8px; padding:12px; margin-bottom:16px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+          <span style="width:8px; height:8px; border-radius:50%; background:#2ecc71; display:inline-block;"></span>
+          <strong>Connected</strong>
+        </div>
+        <div style="color:var(--text-dim); font-size:0.9rem; line-height:1.5;">
+          <div><strong>Type:</strong> ${status.db_type}</div>
+          <div><strong>Host:</strong> ${status.host || "-"}${status.port ? ":" + status.port : ""}</div>
+          <div><strong>Username:</strong> ${status.username || "-"}</div>
+        </div>
+      </div>
+      <p style="color:var(--text-dim); font-size:0.8rem; margin-top:-4px;">
+        This database stays connected and is used for all canal/sensor data until you remove it.
+      </p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+        <button class="btn btn-danger" id="removeDbBtn">Remove</button>
+      </div>
+    `);
+
+    document.getElementById("removeDbBtn").addEventListener("click", async () => {
+      const btn = document.getElementById("removeDbBtn");
+      btn.disabled = true;
+      btn.textContent = "Removing…";
+      try {
+        const res = await API.del("/api/db-connection");
+        showToast(res.message || "Database disconnected");
+        renderConnectForm();
+      } catch (err) {
+        showToast(err.error || err.detail || "Failed to disconnect", "error");
+        btn.disabled = false;
+        btn.textContent = "Remove";
+      }
+    });
+  }
+
+  function renderConnectForm() {
+    openModal(`
+      <h3>Connect Database</h3>
+      <div class="form-group">
+        <label for="dbType">Database Type</label>
+        <select id="dbType">
+          <option value="SQLite">SQLite (default, local)</option>
+          <option value="PostgreSQL">PostgreSQL</option>
+          <option value="MySQL">MySQL</option>
+          <option value="MongoDB">MongoDB</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="dbHost">Host</label>
+        <input id="dbHost" type="text" placeholder="e.g. localhost">
+      </div>
+      <div class="form-group">
+        <label for="dbPort">Port</label>
+        <input id="dbPort" type="text" placeholder="e.g. 5432">
+      </div>
+      <div class="form-group">
+        <label for="dbUser">Username</label>
+        <input id="dbUser" type="text" placeholder="e.g. admin">
+      </div>
+      <div class="form-group" id="dbPasswordGroup">
+        <label for="dbPassword">Password</label>
+        <input id="dbPassword" type="password" placeholder="Server password">
+      </div>
+      <p style="color:var(--text-dim); font-size:0.8rem; margin-top:-4px;">
+        A separate database is created automatically for each main canal, named after
+        that canal (e.g. "South Canal"). Every sensor gets its own table inside that
+        database: <code>&lt;LinkCanalName&gt;_&lt;SensorName&gt;</code> for sensors on a
+        link canal, or <code>_&lt;SensorName&gt;</code> for sensors on the main canal itself.
+        Once connected, it stays in use until you remove it here.
+      </p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" id="connectDbBtn">Connect</button>
+      </div>
+    `);
+
+    function toggleFieldsForType() {
+      const isSqlite = document.getElementById("dbType").value === "SQLite";
+      ["dbHost", "dbPort", "dbUser", "dbPassword"].forEach((id) => {
+        document.getElementById(id).closest(".form-group").style.display = isSqlite ? "none" : "";
+      });
     }
-  });
+    document.getElementById("dbType").addEventListener("change", toggleFieldsForType);
+    toggleFieldsForType();
+
+    document.getElementById("connectDbBtn").addEventListener("click", async () => {
+      const btn = document.getElementById("connectDbBtn");
+      const payload = {
+        db_type: document.getElementById("dbType").value,
+        host: document.getElementById("dbHost").value.trim(),
+        port: document.getElementById("dbPort").value.trim(),
+        username: document.getElementById("dbUser").value.trim(),
+        password: document.getElementById("dbPassword").value,
+      };
+      btn.disabled = true;
+      btn.textContent = "Connecting…";
+      try {
+        const res = await API.post("/api/db-connection", payload);
+        showToast(res.message || "Database connected");
+        closeModal();
+      } catch (err) {
+        // Show the real driver/connection error - never a fake success.
+        showToast(err.error || err.detail || "Connection failed", "error");
+        btn.disabled = false;
+        btn.textContent = "Connect";
+      }
+    });
+  }
 }
