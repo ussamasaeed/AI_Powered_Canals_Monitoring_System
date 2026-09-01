@@ -2,3 +2,9 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 jinja2>=3.1.0
 python-multipart>=0.0.9
+
+# Real external database drivers - only needed if you connect to a
+# PostgreSQL or MySQL server from the "Connect Database" screen.
+# SQLite (the app's default/local database) needs neither.
+psycopg2-binary>=2.9.9
+mysql-connector-python>=8.3.0
