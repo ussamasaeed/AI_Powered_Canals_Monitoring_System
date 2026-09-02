@@ -36,6 +36,11 @@ try:
 except ImportError:
     mysql = None
 
+try:
+    import chatbot
+except ImportError:
+    chatbot = None
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "canal_monitoring.db")
 
@@ -43,6 +48,19 @@ app = FastAPI(title="Canal Monitoring System")
 
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+
+# Cache-busting query param for static JS/CSS - changes whenever those
+# files are edited, so browsers always fetch the latest version instead of
+# serving a stale cached script (e.g. an old chatbot.js missing new buttons).
+def _asset_version() -> str:
+    try:
+        js = os.path.join(BASE_DIR, "static", "js", "chatbot.js")
+        css = os.path.join(BASE_DIR, "static", "css", "style.css")
+        return str(int(max(os.path.getmtime(js), os.path.getmtime(css))))
+    except OSError:
+        return "1"
+
+templates.env.globals["asset_version"] = _asset_version()
 
 
 # ----------------------------------------------------------------------
@@ -658,6 +676,10 @@ class SensorReadingsUpload(BaseModel):
                # "check"     -> save readings + compare against existing threshold
 
 
+class ChatIn(BaseModel):
+    message: str
+
+
 class DbConnectionIn(BaseModel):
     db_type: str
     host: Optional[str] = None
@@ -1078,6 +1100,22 @@ def api_delete_sensor(sensor_id: int, db: sqlite3.Connection = Depends(get_db)):
 def api_get_logs(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute("SELECT * FROM logs ORDER BY id DESC LIMIT 200").fetchall()
     return [dict(r) for r in rows]
+
+
+# ----------------------------------------------------------------------
+# API: Chatbot (RAG over the app's own data)
+# ----------------------------------------------------------------------
+@app.post("/api/chat")
+def api_chat(payload: ChatIn):
+    if chatbot is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Chatbot dependencies aren't installed. Run: pip install -r requirements.txt",
+        )
+    try:
+        return chatbot.answer_query(payload.message)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Chatbot error: {exc}")
 
 
 # ----------------------------------------------------------------------

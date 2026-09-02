@@ -1,1 +1,4 @@
 .canal_monitoring_env
+.env
+chroma_store/
+__pycache__/

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Canal Monitoring System</title>
-<link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}?v={{ asset_version }}">
 </head>
 <body>
 
@@ -56,7 +56,29 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="{{ url_for('static', path='js/common.js') }}"></script>
+<!-- ============ CHATBOT (floating button + panel) ============ -->
+<button class="chatbot-fab" id="chatbotFab" aria-label="Ask the data assistant">
+  <span class="chatbot-fab-icon">💬</span>
+</button>
+
+<div class="chatbot-panel" id="chatbotPanel">
+  <div class="chatbot-panel-header">
+    <span>Data Assistant</span>
+    <div class="chatbot-header-actions">
+      <button class="chatbot-icon-btn" id="chatbotNewBtn" title="New chat" aria-label="Start new chat">&#10022;</button>
+      <button class="chatbot-icon-btn" id="chatbotDeleteBtn" title="Delete chat" aria-label="Delete chat history">&#128465;</button>
+      <button class="chatbot-close-btn" id="chatbotCloseBtn" aria-label="Close chat">&times;</button>
+    </div>
+  </div>
+  <div class="chatbot-messages" id="chatbotMessages"></div>
+  <form class="chatbot-input-row" id="chatbotForm">
+    <input type="text" id="chatbotInput" placeholder="Ask about your data..." autocomplete="off" />
+    <button type="submit" id="chatbotSendBtn" aria-label="Send">&#10148;</button>
+  </form>
+</div>
+
+<script src="{{ url_for('static', path='js/common.js') }}?v={{ asset_version }}"></script>
+<script src="{{ url_for('static', path='js/chatbot.js') }}?v={{ asset_version }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
