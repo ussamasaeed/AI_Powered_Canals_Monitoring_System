@@ -127,3 +127,7 @@ are saved immediately and logged in the Activity Log.
 - The "Connect Database" screen currently stores connection *settings*;
   swap the SQLite calls in `app.py` for `psycopg2`/`PyMySQL`/`pymongo`
   calls if you want to point production data at Postgres/MySQL/MongoDB.
+
+  ## This time not avaiable real sensors so we test genrate data in json file
+  ## upload option for test purpose only if you connect real sensors i provided
+  ## comments help you connect real sensors.

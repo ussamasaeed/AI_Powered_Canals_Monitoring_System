@@ -8,3 +8,10 @@ python-multipart>=0.0.9
 # SQLite (the app's default/local database) needs neither.
 psycopg2-binary>=2.9.9
 mysql-connector-python>=8.3.0
+
+# RAG chatbot (update 1): Hugging Face open-source embedding + chat model,
+# Chroma as the vector store, python-dotenv to load HF_API_TOKEN from .env
+python-dotenv>=1.0.0
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
+huggingface_hub>=0.27.0
