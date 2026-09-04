@@ -14,17 +14,6 @@ vanilla JavaScript (no frontend framework required).
   and touch their main canal; sensors sit on the lines as colored circles
   (green = working, yellow = low level, red = dead), matching the colors
   used on the Home page.
-  - **Sensor tray** — any sensor without a canal assignment sits in a
-    dashed tray strip at the top of the map, all grouped together in one
-    place.
-  - **Drag & drop install** — drag a sensor from the tray onto any canal or
-    link canal line to install it there; drag an installed sensor to
-    reposition it along its line, move it to a different line, or drag it
-    back into the tray to uninstall it.
-  - **Drag & drop link canals** — each link canal has two handles: the
-    handle sitting on the main canal slides left/right to reposition where
-    it branches off; the far-end handle drags up or down to extend the
-    link canal above or below the main canal.
 - **☰ Menu** (top right) — Add Canal, Add Link Canal, Add Sensor, Modify
   Sensor, Delete (sensor / canal / link canal), Log, Connect Database.
 - **Dark, transparent, glassy theme** with a stylised canal/water
