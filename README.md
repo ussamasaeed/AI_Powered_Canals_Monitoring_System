@@ -94,19 +94,20 @@ try the drag-to-install flow immediately.
   app already uses a local SQLite database; this screen lets you point it
   at a different one.
 
-## Map drag & drop reference
+## Map
 
-| Action | How |
-|---|---|
-| Install a tray sensor | Drag it from the top tray onto any canal or link canal line; it snaps to the nearest point on that line. |
-| Reposition an installed sensor | Drag it further along its current line, or onto a different line entirely. |
-| Uninstall a sensor | Drag it back up into the dashed tray zone at the top. |
-| Move where a link canal branches off | Drag its handle that sits on the main canal left/right. |
-| Extend a link canal up or down | Drag its far-end handle above or below the main canal. |
+-**Working** - This time from map for only display purpose, Beause this
+time not available real sensors when we working on from real sensors
+every sensor throught its location 
+-**Example** - one canal install 100 sensors on different location all
+throw its location we draw ln touch all 100 sensors so, automatically
+create canal map.
 
-All drag actions call the REST API (`PUT /api/sensors/{id}`,
-`PUT /api/link-canals/{id}`) as soon as you release the mouse, so changes
-are saved immediately and logged in the Activity Log.
+## Auto Set Threshold Value
+
+-**Use** - If we set whole canal sensors value in one click.
+-**Working** -when Canal is full every sensors is in working state.
+So, you press button every sensors Present reading make its threshold.
 
 ## Status thresholds
 

@@ -19,20 +19,36 @@ Pieces (all Hugging Face open-source):
         can be answered even though SQLite only keeps the latest value.
       Every question rebuilds the knowledge base from whichever of these
       are available, so answers never go stale.
-  - Chat model       : an open-source instruction-tuned chat model, called
-                        through the Hugging Face Inference API, generates
-                        the final answer grounded in the retrieved context.
+  - Chat model       : an open-source instruction-tuned chat model. Two
+                        providers are supported:
+                          * "ollama" (default) - runs fully locally via a
+                            local Ollama server (http://localhost:11434).
+                            No internet dependency, no external API to go
+                            down. Pick a small model (3B or under) since
+                            this machine has 8GB RAM.
+                          * "hf" - calls the Hugging Face Inference API
+                            (remote, needs HF_API_TOKEN and an internet
+                            connection - this is what used to break).
 
-Configuration lives in `.env` (see .env.example / .env in this folder):
-    HF_API_TOKEN     - your Hugging Face access token (required for answers)
+Configuration lives in `.env` (see .env in this folder):
+    LLM_PROVIDER     - "ollama" (default) or "hf"
+    OLLAMA_HOST      - base URL of the local Ollama server (default
+                        http://localhost:11434)
+    OLLAMA_MODEL     - Ollama model tag to use, e.g. qwen2.5:3b
+    HF_API_TOKEN     - your Hugging Face access token (only used if
+                        LLM_PROVIDER=hf)
     EMBEDDING_MODEL  - sentence-transformers model name
-    CHAT_MODEL       - HF chat/instruct model name (served via HF Inference)
+    CHAT_MODEL       - HF chat/instruct model name (only used if
+                        LLM_PROVIDER=hf)
     RAG_TOP_K        - how many context chunks to retrieve per question
 """
 
+import json
 import os
 import sqlite3
 import threading
+import urllib.error
+import urllib.request
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -41,12 +57,20 @@ load_dotenv()
 
 import chromadb
 from chromadb.utils import embedding_functions
-from huggingface_hub import InferenceClient
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "canal_monitoring.db")
 CHROMA_DIR = os.path.join(BASE_DIR, "chroma_store")
 EXTERNAL_HISTORY_LIMIT = 200
+
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").strip().rstrip("/")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b").strip()
+# Generous default - a small CPU-bound model chewing through a big "report
+# of all sensors" style context can genuinely take a couple of minutes on
+# an 8GB machine, especially on the first call after Ollama loads the model.
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
 
 HF_TOKEN = os.getenv("HF_API_TOKEN", "").strip()
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2").strip()
@@ -69,9 +93,57 @@ _collection = _chroma_client.get_or_create_collection(
 )
 
 # ----------------------------------------------------------------------
-# Chat model (Hugging Face Inference API)
+# Chat model
 # ----------------------------------------------------------------------
-_hf_client = InferenceClient(token=HF_TOKEN, timeout=45) if HF_TOKEN else None
+# HF client is only created (and huggingface_hub only imported) if the HF
+# provider is actually selected, so a plain local/Ollama setup doesn't need
+# the huggingface_hub package installed at all.
+_hf_client = None
+if LLM_PROVIDER == "hf" and HF_TOKEN:
+    from huggingface_hub import InferenceClient
+    _hf_client = InferenceClient(token=HF_TOKEN, timeout=45)
+
+
+def _ollama_available() -> bool:
+    try:
+        urllib.request.urlopen(f"{OLLAMA_HOST}/api/tags", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+def _call_ollama_chat(model: str, question: str, context: str) -> str:
+    """One attempt at calling a local Ollama model via its /api/chat
+    endpoint (no extra SDK needed - plain HTTP)."""
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
+        ],
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{OLLAMA_HOST}/api/chat",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Ollama HTTP {e.code}: {detail}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Can't reach Ollama at {OLLAMA_HOST} ({e.reason}). "
+            f"Is 'ollama serve' running?"
+        ) from e
+
+    return (body.get("message", {}) or {}).get("content", "").strip()
 
 
 def _get_app_module():
@@ -292,7 +364,7 @@ SYSTEM_PROMPT = (
 
 
 # If CHAT_MODEL isn't servable on the account's enabled providers, try these
-# widely-hosted models in order before giving up - keeps the chatbot working
+# widely-hosted models in order before giving up - keeps the HF path working
 # even when HF's model/provider availability shifts under you.
 FALLBACK_MODELS = [
     m for m in [
@@ -305,6 +377,12 @@ FALLBACK_MODELS = [
 ]
 # de-dupe while keeping order
 FALLBACK_MODELS = list(dict.fromkeys(FALLBACK_MODELS))
+
+# Small (<=3B) Ollama models to try if OLLAMA_MODEL isn't pulled locally yet -
+# all comfortably fit an 8GB RAM machine alongside the rest of the app.
+OLLAMA_FALLBACK_MODELS = list(dict.fromkeys([
+    m for m in [OLLAMA_MODEL, "qwen2.5:3b", "llama3.2:3b", "phi3.5", "gemma2:2b"] if m
+]))
 
 _NOT_SUPPORTED_MARKERS = ("not supported by any provider", "model_not_supported")
 
@@ -330,16 +408,60 @@ def _call_chat_model(model: str, question: str, context: str):
 def _generate_answer(question: str, context_docs: List[str]) -> str:
     context = "\n".join(f"- {d}" for d in context_docs) if context_docs else "(no matching data found)"
 
+    if LLM_PROVIDER == "ollama":
+        return _generate_answer_ollama(question, context, context_docs)
+    return _generate_answer_hf(question, context, context_docs)
+
+
+def _generate_answer_ollama(question: str, context: str, context_docs: List[str]) -> str:
+    if not _ollama_available():
+        if not context_docs:
+            return (
+                f"Can't reach the local Ollama server at {OLLAMA_HOST}. Start it with "
+                f"'ollama serve' (and make sure you've pulled a model, e.g. "
+                f"'ollama pull {OLLAMA_MODEL}'). I also couldn't find anything "
+                f"relevant in the current data."
+            )
+        bullets = "\n".join(f"- {d}" for d in context_docs[:3])
+        return (
+            f"Can't reach the local Ollama server at {OLLAMA_HOST}. Start it with "
+            f"'ollama serve' (and make sure you've pulled a model, e.g. "
+            f"'ollama pull {OLLAMA_MODEL}'). Closest matching data:\n{bullets}"
+        )
+
+    last_error: Optional[Exception] = None
+    for model in OLLAMA_FALLBACK_MODELS:
+        try:
+            content = _call_ollama_chat(model, question, context)
+            if not content:
+                last_error = RuntimeError(f"{model} returned an empty response")
+                continue
+            return content
+        except Exception as exc:
+            last_error = exc
+            msg = str(exc).lower()
+            if "not found" in msg or "404" in msg:
+                continue  # model not pulled locally - try the next fallback
+            break  # connection error etc. - stop trying more models
+
+    return (
+        f"Sorry, I couldn't get an answer from Ollama ({last_error}). Make sure "
+        f"the model is pulled locally, e.g.:\n  ollama pull {OLLAMA_MODEL}\n"
+        f"Here is the relevant data:\n{context}"
+    )
+
+
+def _generate_answer_hf(question: str, context: str, context_docs: List[str]) -> str:
     if _hf_client is None:
         if not context_docs:
             return (
-                "The chat model isn't configured yet - add a Hugging Face access "
+                "The Hugging Face chat model isn't configured yet - add an access "
                 "token to HF_API_TOKEN in the .env file to enable full answers. "
                 "I also couldn't find anything relevant in the current data."
             )
         bullets = "\n".join(f"- {d}" for d in context_docs[:3])
         return (
-            "The chat model isn't configured yet - add a Hugging Face access "
+            "The Hugging Face chat model isn't configured yet - add an access "
             "token to HF_API_TOKEN in the .env file for a proper answer. "
             f"Closest matching data:\n{bullets}"
         )
@@ -428,9 +550,50 @@ def _direct_status_answer(question: str) -> Optional[str]:
     return f"{len(sensors)} sensor(s) are currently '{matched_status}': {listed}."
 
 
+def _direct_sensor_report(question: str) -> Optional[str]:
+    """Fast, exact 'report of all sensors' answer built straight from
+    SQLite. Similarity search alone isn't reliable for this: with 100+
+    activity-log documents in the collection, a generic 'sensors report'
+    query often surfaces mostly log entries instead of the sensors
+    themselves, and it also blows up the context sent to the local model
+    for no benefit. Steps aside for anything about history/trends so the
+    full RAG pass (with external DB history) still handles those."""
+    q = question.lower()
+    if any(kw in q for kw in HISTORY_KEYWORDS):
+        return None
+    if "sensor" not in q:
+        return None
+    if not any(kw in q for kw in ("report", "summary", "overview", "all sensor", "list sensor")):
+        return None
+
+    sensors = _rows(
+        "SELECT s.*, c.name AS canal_name, lc.name AS link_name FROM sensors s "
+        "LEFT JOIN canals c ON s.main_canal_id = c.id "
+        "LEFT JOIN link_canals lc ON s.link_canal_id = lc.id "
+        "ORDER BY s.name"
+    )
+    if not sensors:
+        return "There are no sensors in the system yet."
+
+    lines = [f"Sensor report - {len(sensors)} sensor(s):"]
+    for s in sensors:
+        if s.get("canal_name"):
+            location = f"canal '{s['canal_name']}'"
+            if s.get("link_name"):
+                location += f", link '{s['link_name']}'"
+        else:
+            location = "unassigned"
+        lines.append(
+            f"- {s['name']} ({location}): status '{s['status']}', "
+            f"water_level={s['water_level']}, flow_rate={s['flow_rate']}, "
+            f"last seen {s['last_seen']}."
+        )
+    return "\n".join(lines)
+
+
 def answer_query(question: str) -> Dict:
     """Full RAG pipeline: refresh knowledge base -> embed + retrieve ->
-    generate a grounded answer with the HF chat model."""
+    generate a grounded answer with the chat model."""
     question = (question or "").strip()
     if not question:
         return {"answer": "Please ask a question.", "sources": []}
@@ -441,8 +604,16 @@ def answer_query(question: str) -> Dict:
     if direct is not None:
         return {"answer": direct, "sources": []}
 
+    direct_report = _direct_sensor_report(question)
+    if direct_report is not None:
+        return {"answer": direct_report, "sources": []}
+
     q_lower = question.lower()
     broad = any(kw in q_lower for kw in ("summary", "report", "overview", "all sensor"))
-    docs = retrieve(question, top_k=(_collection.count() if broad else TOP_K))
+    # Cap broad queries instead of dumping the entire collection (which was
+    # timing out the local model on an 8GB machine) - top_k=40 comfortably
+    # covers most broad questions without a huge context.
+    top_k = min(_collection.count(), 40) if broad else TOP_K
+    docs = retrieve(question, top_k=top_k)
     answer = _generate_answer(question, docs)
     return {"answer": answer, "sources": docs}
