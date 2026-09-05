@@ -16,15 +16,20 @@ vanilla JavaScript (no frontend framework required).
   used on the Home page.
 - **☰ Menu** (top right) — Add Canal, Add Link Canal, Add Sensor, Modify
   Sensor, Delete (sensor / canal / link canal), Log, Connect Database.
+- **AI assistant** — a chat panel that answers questions about your canals
+  and sensors in plain language, grounded in the live database. See
+  [AI assistant (chatbot)](#ai-assistant-chatbot) for setup.
 - **Dark, transparent, glassy theme** with a stylised canal/water
   background.
 
 ## Project structure
 
 ```
-canal_monitoring/
+AI_Powered_Canals_Monitoring_System/
 ├── app.py                 # FastAPI backend + REST API + SQLite models
+├── chatbot.py             # RAG chatbot: Chroma vector store + Ollama / HF model
 ├── requirements.txt
+├── .env.example           # template for .env (LLM provider, models, token)
 ├── canal_monitoring.db    # SQLite database (auto-created on first run)
 ├── templates/
 │   ├── base.html          # shared layout: topbar, hamburger menu, tabs
@@ -33,18 +38,18 @@ canal_monitoring/
 └── static/
     ├── css/
     │   └── style.css      # dark transparent theme + drag & drop styles
-    ├── js/
-    │   ├── common.js      # menu, modals, API calls, all add/edit/delete forms
-    │   ├── home.js        # renders sensor list + alert panel
-    │   └── map.js         # draws canal/link-canal lines, sensor tray, and
-    │                       # all pointer-based drag & drop logic
-    └── img/                # (reserved for custom background images)
+    └── js/
+        ├── chatbot.js     # chat panel UI + calls to POST /api/chat
+        ├── common.js      # menu, modals, API calls, all add/edit/delete forms
+        ├── home.js        # renders sensor list + alert panel
+        └── map.js         # draws canal/link-canal lines, sensor tray, and
+                            # all pointer-based drag & drop logic
 ```
 
 ## Setup & run
 
 ```bash
-cd canal_monitoring
+cd AI_Powered_Canals_Monitoring_System
 pip install -r requirements.txt
 uvicorn app:app --reload
 ```
@@ -59,6 +64,83 @@ first run, seeded with one sample canal, one link canal, three sample
 sensors installed on the canal/link canal (one healthy, one low-level, one
 dead), and one extra sensor left **unassigned** in the map tray so you can
 try the drag-to-install flow immediately.
+
+## AI assistant (chatbot)
+
+The app ships with a RAG (retrieval-augmented generation) chatbot that answers
+questions about your own canals and sensors, such as "which sensors are dead?"
+or "what is the water level on S-101?". It reads the live SQLite data (plus the
+external database if one is connected from the **Connect Database** screen),
+indexes it in a local Chroma vector store, and sends only the relevant pieces
+to a chat model.
+
+The chatbot is **optional**. The monitoring system runs fine without it, and
+`POST /api/chat` returns a clear 503 message if the extra packages are missing.
+
+### 1. Install the packages
+
+```bash
+pip install -r requirements.txt
+```
+
+Note that this pulls in `sentence-transformers`, which installs PyTorch. It is
+a large download (roughly 2 GB), so allow time for it.
+
+### 2. Create your `.env`
+
+```bash
+cp .env.example .env
+```
+
+`.env` is listed in `.gitignore`, so your token never gets committed.
+
+### 3. Choose a chat model backend
+
+Set `LLM_PROVIDER` in `.env` to either `ollama` or `hf`.
+
+**Option A: `ollama` (default, runs locally, no API key)**
+
+Install Ollama from https://ollama.com/download, then pull a small model and
+start the server:
+
+```bash
+ollama serve
+ollama pull qwen2.5:3b
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OLLAMA_HOST` | `http://localhost:11434` | Where the Ollama server listens |
+| `OLLAMA_MODEL` | `qwen2.5:3b` | Model tag to use |
+| `OLLAMA_TIMEOUT_SECONDS` | `180` | How long to wait for an answer |
+
+If `OLLAMA_MODEL` has not been pulled yet, `chatbot.py` falls back to other
+small models it finds locally (`llama3.2:3b`, `phi3.5`, `gemma2:2b`).
+
+**Option B: `hf` (Hugging Face Inference API, needs a free token)**
+
+Get a token at https://huggingface.co/settings/tokens, then in `.env`:
+
+```
+LLM_PROVIDER=hf
+HF_API_TOKEN="hf_your_token_here"
+CHAT_MODEL=Qwen/Qwen2.5-7B-Instruct
+```
+
+### Shared settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model, always runs locally |
+| `RAG_TOP_K` | `5` | How many context chunks to retrieve per question |
+
+### Troubleshooting
+
+| Message | Fix |
+|---|---|
+| `Chatbot dependencies aren't installed` | Run `pip install -r requirements.txt` |
+| `Can't reach Ollama at ...` | Start the server with `ollama serve` |
+| Answers say no token is configured | Set `HF_API_TOKEN` in `.env`, or switch to `LLM_PROVIDER=ollama` |
 
 ## How the pieces fit together
 
@@ -118,6 +200,9 @@ So, you press button every sensors Present reading make its threshold.
   swap the SQLite calls in `app.py` for `psycopg2`/`PyMySQL`/`pymongo`
   calls if you want to point production data at Postgres/MySQL/MongoDB.
 
-  ## This time not avaiable real sensors so we test genrate data in json file
-  ## upload option for test purpose only if you connect real sensors i provided
-  ## comments help you connect real sensors.
+## Test data (no real sensors yet)
+
+Real sensors are not connected yet, so for testing we generate readings in a
+JSON file and load them through the upload option. This is for test purposes
+only. If you connect real sensors, the comments in `app.py` show you where to
+wire them in.
