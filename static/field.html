@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Field View - Canal Monitoring</title>
+<style>
+  :root {
+    --bg-deep: #050c14;
+    --glass-bg: rgba(10, 25, 38, 0.62);
+    --glass-border: rgba(255, 255, 255, 0.12);
+    --text-main: #eaf6fb;
+    --text-dim: #9db6c4;
+    --accent-cyan: #35d0e0;
+    --ok-color: #38e07a;
+    --warning-color: #f5c542;
+    --dead-color: #ff5568;
+    --radius: 16px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg-deep);
+    color: var(--text-main);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    /* Larger base size than the desktop UI: this screen is read at arm's
+       length, outdoors, often in bright sun. */
+    font-size: 17px;
+    line-height: 1.45;
+    padding-bottom: 40px;
+  }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(5, 12, 20, 0.94);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--glass-border);
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  h1 { font-size: 1.15rem; margin: 0; letter-spacing: 0.2px; }
+  .meta { font-size: 0.8rem; color: var(--text-dim); margin-top: 4px; }
+
+  /* Refresh control: 44px minimum touch target. */
+  .refresh-btn {
+    min-height: 44px; min-width: 44px;
+    padding: 0 16px;
+    border-radius: 12px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    color: var(--accent-cyan);
+    font-size: 0.9rem; font-weight: 600;
+    cursor: pointer;
+  }
+  .refresh-btn:active { background: rgba(53, 208, 224, 0.18); }
+
+  main { padding: 16px; max-width: 720px; margin: 0 auto; }
+
+  /* ---- Summary tiles ------------------------------------------------- */
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+  .tile {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    padding: 14px 10px;
+    text-align: center;
+  }
+  .tile-num { font-size: 2rem; font-weight: 700; line-height: 1.1; }
+  .tile-label { font-size: 0.78rem; color: var(--text-dim); margin-top: 2px; }
+  .tile.ok .tile-num { color: var(--ok-color); }
+  .tile.warning .tile-num { color: var(--warning-color); }
+  .tile.dead .tile-num { color: var(--dead-color); }
+
+  .headline {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 18px;
+    text-align: center;
+    font-size: 1.05rem;
+  }
+  .headline strong { font-size: 1.5rem; }
+
+  /* ---- Canal groups -------------------------------------------------- */
+  .canal {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .canal-head {
+    width: 100%;
+    min-height: 56px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+    background: none; border: none;
+    color: inherit; font: inherit; text-align: left;
+    cursor: pointer;
+  }
+  .canal-name { flex: 1; font-weight: 600; }
+  .canal-count { font-size: 0.8rem; color: var(--text-dim); }
+  .chev { color: var(--text-dim); transition: transform 0.15s; font-size: 0.9rem; }
+  .canal.open .chev { transform: rotate(90deg); }
+
+  .sensor-list { display: none; padding: 0 14px 12px; }
+  .canal.open .sensor-list { display: block; }
+
+  .sensor {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 0;
+    border-top: 1px solid var(--glass-border);
+  }
+  .sensor-name { flex: 1; font-weight: 500; }
+  .sensor-sub { font-size: 0.78rem; color: var(--text-dim); }
+  .reading { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .reading-main { font-weight: 600; }
+  .reading-sub { font-size: 0.75rem; color: var(--text-dim); }
+
+  /* ---- Status chip ----------------------------------------------------
+     Status is NEVER colour alone. Green (#38e07a) and yellow (#f5c542)
+     sit only ~5.3 Delta E apart under protanopia, so a red-blind reader
+     cannot reliably separate "OK" from "Low". Every chip therefore
+     carries an icon AND a word as well as the colour. */
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    font-size: 0.76rem; font-weight: 700;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
+  .chip .ico { font-size: 0.85rem; line-height: 1; }
+  .chip.ok      { background: rgba(56, 224, 122, 0.18); color: var(--ok-color); }
+  .chip.warning { background: rgba(245, 197, 66, 0.18); color: var(--warning-color); }
+  .chip.dead    { background: rgba(255, 85, 104, 0.18); color: var(--dead-color); }
+
+  /* ---- States -------------------------------------------------------- */
+  .notice {
+    border-radius: var(--radius);
+    padding: 16px;
+    text-align: center;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    color: var(--text-dim);
+  }
+  .notice.error { border-color: rgba(255, 85, 104, 0.5); color: var(--dead-color); }
+
+  .live-dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--ok-color);
+    margin-right: 5px; vertical-align: middle;
+  }
+  .live-dot.stale { background: var(--warning-color); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-row">
+    <div>
+      <h1>Canal Field View</h1>
+      <div class="meta"><span id="live" class="live-dot"></span><span id="updated">Loading...</span></div>
+    </div>
+    <button class="refresh-btn" id="refresh" type="button">Refresh</button>
+  </div>
+</header>
+
+<main>
+  <div id="content"><div class="notice">Loading sensor data...</div></div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // Absolute path so the page works both at /field and at
+  // /static/field.html (a relative path would break under /static/).
+  var API = "/api/sensors";
+  var REFRESH_MS = 15000;
+
+  var LABEL = { ok: "OK", warning: "LOW", dead: "DEAD" };
+  var ICON  = { ok: "✔", warning: "⚠", dead: "✖" };
+  var RANK  = { dead: 3, warning: 2, ok: 1 };
+
+  var contentEl = document.getElementById("content");
+  var updatedEl = document.getElementById("updated");
+  var liveEl    = document.getElementById("live");
+  var openCanals = {};   // remember which groups the user expanded
+  var timer = null;
+
+  function esc(v) {
+    return String(v === null || v === undefined ? "" : v)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function num(v, unit) {
+    if (v === null || v === undefined || v === "") return "--";
+    var n = Number(v);
+    if (isNaN(n)) return "--";
+    return n.toFixed(2) + (unit || "");
+  }
+
+  function chip(status) {
+    var s = LABEL[status] ? status : "dead";
+    return '<span class="chip ' + s + '">' +
+             '<span class="ico" aria-hidden="true">' + ICON[s] + '</span>' + LABEL[s] +
+           '</span>';
+  }
+
+  function render(sensors) {
+    if (!sensors.length) {
+      contentEl.innerHTML = '<div class="notice">No sensors have been added yet.</div>';
+      return;
+    }
+
+    var counts = { ok: 0, warning: 0, dead: 0 };
+    var groups = {};
+
+    sensors.forEach(function (s) {
+      var st = LABEL[s.status] ? s.status : "dead";
+      counts[st]++;
+      var key = s.canal_name || "Unassigned";
+      (groups[key] = groups[key] || []).push(s);
+    });
+
+    var html = "";
+
+    // Headline: the one question a field operator actually has.
+    var total = sensors.length;
+    var problems = counts.warning + counts.dead;
+    html += '<div class="headline">' +
+      (problems === 0
+        ? '<strong>All ' + total + '</strong> sensors reporting normally'
+        : '<strong>' + problems + ' of ' + total + '</strong> sensor' +
+          (problems === 1 ? '' : 's') + ' need attention') +
+      '</div>';
+
+    html += '<div class="tiles">' +
+      '<div class="tile ok"><div class="tile-num">' + counts.ok + '</div><div class="tile-label">OK</div></div>' +
+      '<div class="tile warning"><div class="tile-num">' + counts.warning + '</div><div class="tile-label">Low level</div></div>' +
+      '<div class="tile dead"><div class="tile-num">' + counts.dead + '</div><div class="tile-label">Dead</div></div>' +
+      '</div>';
+
+    // Worst-status-first so problems float to the top of the screen.
+    Object.keys(groups).sort(function (a, b) {
+      var wa = 0, wb = 0;
+      groups[a].forEach(function (s) { wa = Math.max(wa, RANK[s.status] || 3); });
+      groups[b].forEach(function (s) { wb = Math.max(wb, RANK[s.status] || 3); });
+      return wb - wa || a.localeCompare(b);
+    }).forEach(function (canal) {
+      var list = groups[canal];
+      var worst = "ok";
+      list.forEach(function (s) {
+        if ((RANK[s.status] || 3) > (RANK[worst] || 0)) worst = LABEL[s.status] ? s.status : "dead";
+      });
+
+      var isOpen = openCanals[canal] || worst !== "ok";   // auto-open problem canals
+      openCanals[canal] = isOpen;
+
+      html += '<section class="canal' + (isOpen ? " open" : "") + '" data-canal="' + esc(canal) + '">' +
+        '<button class="canal-head" type="button" aria-expanded="' + isOpen + '">' +
+          '<span class="chev" aria-hidden="true">&#9654;</span>' +
+          '<span class="canal-name">' + esc(canal) + '</span>' +
+          '<span class="canal-count">' + list.length + '</span>' +
+          chip(worst) +
+        '</button>' +
+        '<div class="sensor-list">';
+
+      list.slice().sort(function (a, b) {
+        return (RANK[b.status] || 3) - (RANK[a.status] || 3) ||
+               String(a.name).localeCompare(String(b.name));
+      }).forEach(function (s) {
+        html += '<div class="sensor">' +
+            chip(LABEL[s.status] ? s.status : "dead") +
+            '<div class="sensor-name">' + esc(s.name) +
+              (s.link_name ? '<div class="sensor-sub">' + esc(s.link_name) + '</div>' : '') +
+            '</div>' +
+            '<div class="reading">' +
+              '<div class="reading-main">' + num(s.water_level, " m") + '</div>' +
+              '<div class="reading-sub">' + num(s.flow_rate) + ' flow</div>' +
+            '</div>' +
+          '</div>';
+      });
+
+      html += '</div></section>';
+    });
+
+    contentEl.innerHTML = html;
+  }
+
+  // Expand / collapse, delegated so it survives every re-render.
+  contentEl.addEventListener("click", function (e) {
+    var head = e.target.closest ? e.target.closest(".canal-head") : null;
+    if (!head) return;
+    var section = head.parentNode;
+    var name = section.getAttribute("data-canal");
+    var nowOpen = !section.classList.contains("open");
+    section.classList.toggle("open", nowOpen);
+    head.setAttribute("aria-expanded", String(nowOpen));
+    openCanals[name] = nowOpen;
+  });
+
+  function load() {
+    fetch(API, { headers: { "Accept": "application/json" }, cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("Server returned " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        if (!Array.isArray(data)) throw new Error("Unexpected response");
+        render(data);
+        liveEl.className = "live-dot";
+        updatedEl.textContent = "Updated " + new Date().toLocaleTimeString();
+      })
+      .catch(function (err) {
+        liveEl.className = "live-dot stale";
+        updatedEl.textContent = "Could not reach the server";
+        contentEl.innerHTML = '<div class="notice error">' + esc(err.message) +
+          '<br><br>Is the app still running?</div>';
+      });
+  }
+
+  function start() { stop(); timer = setInterval(load, REFRESH_MS); }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+
+  // Don't burn phone battery or mobile data while the screen is away.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) { stop(); } else { load(); start(); }
+  });
+
+  document.getElementById("refresh").addEventListener("click", load);
+
+  load();
+  start();
+})();
+</script>
+</body>
+</html>

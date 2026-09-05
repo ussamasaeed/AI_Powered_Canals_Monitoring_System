@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -702,6 +703,17 @@ def home(request: Request):
 @app.get("/map", name="map_page")
 def map_page(request: Request):
     return templates.TemplateResponse(request, "map.html", {"active": "map"})
+
+
+@app.get("/field", name="field_view")
+def field_view():
+    """Mobile, read-only status page for use out at the canal.
+
+    Served as a plain static file (no template context) so it stays fully
+    self-contained and independent of the desktop UI. It only ever calls
+    GET /api/sensors, so it cannot modify any data.
+    """
+    return FileResponse(os.path.join(BASE_DIR, "static", "field.html"))
 
 
 # ----------------------------------------------------------------------
