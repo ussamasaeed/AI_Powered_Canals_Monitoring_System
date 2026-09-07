@@ -1,4 +1,4 @@
-# Canal Monitoring System
+# AI Powered Canal Monitoring System
 
 An AI-powered web interface for monitoring irrigation canals, link canals,
 and their sensors in real time — built with **FastAPI**, SQLite, and
@@ -44,6 +44,7 @@ AI_Powered_Canals_Monitoring_System/
         ├── home.js        # renders sensor list + alert panel
         └── map.js         # draws canal/link-canal lines, sensor tray, and
                             # all pointer-based drag & drop logic
+# Note: Now this time map set drag drop for test purpose only when we apply every sensor shear it location so automatically create map this time not available sensors so that we do it
 ```
 
 ## Setup & run
