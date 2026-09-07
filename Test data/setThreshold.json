@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Test001",
+    "velocity": 1.20,
+    "distance_measured": 0.80
+  },
+  {
+    "name": "T002",
+    "velocity": 1.15,
+    "distance_measured": 0.85
+  }
+]
