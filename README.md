@@ -1,4 +1,4 @@
-# Canal Monitoring System
+# Canal Monitoring System AI Powered
 
 An AI-powered web interface for monitoring irrigation canals, link canals,
 and their sensors in real time — built with **FastAPI**, SQLite, and
