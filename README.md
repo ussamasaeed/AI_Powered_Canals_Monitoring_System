@@ -14,7 +14,7 @@ vanilla JavaScript (no frontend framework required).
   and touch their main canal; sensors sit on the lines as colored circles
   (green = working, yellow = low level, red = dead), matching the colors
   used on the Home page.
-- **☰ Menu** (top right) — Add Canal, Add Link Canal, Add Sensor, Modify
+- **☰ Menu** (top right) - Add Canal, Add Link Canal, Add Sensor, Modify
   Sensor, Delete (sensor / canal / link canal), Log, Connect Database.
 - **AI assistant** — a chat panel that answers questions about your canals
   and sensors in plain language, grounded in the live database. See
@@ -165,7 +165,7 @@ CHAT_MODEL=Qwen/Qwen2.5-7B-Instruct
 - **Delete** — choose whether you're deleting a sensor, a canal, or a link
   canal, then pick which one.
 - **Log** — a running activity log of every add/edit/delete/move action.
-- **Connect Database** — a form to record which external database
+- **Connect Database** - a form to record which external database
   (PostgreSQL/MySQL/MongoDB/etc.) the system should talk to. By default the
   app already uses a local SQLite database; this screen lets you point it
   at a different one.
