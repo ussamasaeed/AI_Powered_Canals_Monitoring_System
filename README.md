@@ -55,6 +55,7 @@ AI_Powered_Canals_Monitoring_System/
 
 ```bash
 cd AI_Powered_Canals_Monitoring_System
+ollama pull qwen2.5:3b   #### This time used ollama local llm model if you use another llm then skip it this command.
 pip install -r requirements.txt
 uvicorn app:app --reload
 ```

@@ -5,6 +5,7 @@ FastAPI + SQLite backend that serves the web interface and provides a
 REST API for canals, link canals and sensors.
 
 Run:
+    ollama pull qwen2.5:3b 
     pip install -r requirements.txt
     uvicorn app:app --reload
 
@@ -1219,4 +1220,4 @@ def api_delete_db_connection(db: sqlite3.Connection = Depends(get_db)):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
